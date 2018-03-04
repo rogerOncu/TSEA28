@@ -1,0 +1,656 @@
+;*******************************
+;*
+;* Malldokument fÃ¶r Lab2 i Datorteknik Y pÃ¥ Darma
+;*
+;* KPa 180212
+;*     180219 Fix initGPIOE, GPIODATA def
+;*
+;*
+;* Lab 2: AnvÃ¤nd tvÃ¥ portar fÃ¶r avbrott: Port F pin 4 och Port D pin 7
+;*
+;*        Port B pin 0-7 definierat som utgÃ¥ngar
+;*        Port D pin 7 definierat som ingÃ¥ng, pin 7 avbrott pÃ¥ stigande flank
+;*        Port E pin 0-5 definierat som utgÃ¥ngar
+;*        Port F pin 0-3 definierat som utgÃ¥ngar
+;*        Port F pin 4 definierat som ingÃ¥ng med pull-up, pin 4 avbrott pÃ¥ stigande flank
+;*
+;* FÃ¶rdefinierade subrutiner
+;*
+;*  inituart:   Initiera uart0 till 115200 baud, 8N1.
+;*  initGPIOB:  Initiera port B
+;*  initGPIOD:  Initiera port D
+;*  initGPIOE:  Initiera port E
+;*  initGPIOF:  Initiera port F
+;*  initint:    Initiera NVIC fÃ¶r GPIOF prio 5, GPIOD prio 2
+;*  SKBAK:		Skriv ut "Bakgrundsprogram"
+;*  SKAVH:		Skriv ut "     Avbrott hÃ¶ger"
+;*  SKAVV:		Skriv ut "  Avbrott vÃ¤nster"
+;*  DELAY:		FÃ¶rdrÃ¶jning, r1=antal ms att vÃ¤nta
+;*
+
+	.thumb		; Kod ska vara fÃ¶r Thumb mode
+	.text		; Programkod ska placeras i programminnet
+	.align 2	; BÃ¶rja pÃ¥ en jÃ¤mn adress
+;*******************************************************************************************************
+;*
+;* Subrutiner och definition. Inget som ska behÃ¶va Ã¤ndras i labben, dÃ¤remot kan ni anvÃ¤nda eller lÃ¤gga
+;* till definitioner i tabellen nedan.
+;*
+
+;	inituart
+;   Destroys r0, r1
+;	inituart (assume almost all is default: no analog activated, UART0 already enabled by default) Could add code to check and setup if not correct
+;   NOTE: Drawback with this approach: unsure if reset of cpu works!
+;   enable UART0 (clock gating) (set 1 in bit 0 in RCGCUART at 0x400F.E000, offset 0x618)
+
+;*****************************************************
+;*
+;* Konstanter som lagras i programminnet
+;*
+;* AnvÃ¤nds tillsammans med offset konstanterna nedan
+;*
+;*****************************************************
+UART0_base	.field	0x4000c000, 32	; Startadress fÃ¶r UART
+
+GPIOA_base	.field	0x40004000, 32	; General Purpose IO port A startadress
+GPIOB_base	.field	0x40005000, 32	; General Purpose IO port B startadress
+GPIOC_base	.field	0x40006000, 32	; General Purpose IO port C startadress
+GPIOD_base	.field	0x40007000, 32	; General Purpose IO port D startadress
+GPIOE_base	.field	0x40024000, 32	; General Purpose IO port E startadress
+GPIOF_base	.field	0x40025000, 32	; General Purpose IO port F startadress
+
+GPIO_HBCTL	.field	0x400FE06C, 32	; GPIO bussval
+
+NVIC_base	.field	0xe000e000, 32	; Nested Vectored Interrupt Controller
+
+GPIO_KEY	.field	0x4c4f434b, 32	; NyckelvÃ¤rde fÃ¶r upplÃ¥sning av konfiguration
+
+RCGCUART	.field	0x400FE618, 32	; Starta UART portar
+RCGCGPIO	.field	0x400fe608, 32	; Starta GPIO portar
+SJUSEGTAB	.byte 0x3F		; 0
+			.byte 0x06		; 1
+			.byte 0x5B		; 2
+			.byte 0x4F		; 3
+			.byte 0x66		; 4
+			.byte 0x6D		; 5
+			.byte 0x7C		; 6
+			.byte 0x07		; 7
+			.byte 0x7F		; 8
+			.byte 0x67		; 9
+			.byte 0x0		;10
+GPIOE_GPIODATA	.field 	0x4002407c , 32
+GPIOB_GPIODATA	.field 	0x400053fc , 32
+Clock_adress			.field 	0x20001000	, 32
+;*****************************************************
+; Konstanter som inte lagras i programminnet
+;
+; AnvÃ¤nds som offset tillsammans med base-definitioner
+; ovan.
+;*****************************************************
+UARTDR		.equ	0x0000	; Data register
+UARTFR		.equ	0x0018	; Flag register
+UARTIBRD	.equ	0x0024	; Baud rate styrning1
+UARTFBRD	.equ	0x0028	; Baud rate styrning2
+UARTLCRH	.equ	0x002c	;
+UARTCTL		.equ	0x0030	; Control register
+
+GPIODATA	.equ	0x03fc	; Data register
+GPIODIR		.equ	0x0400	; Direction select
+GPIOIS		.equ	0x0404	; interrupt sense
+GPIOIBE		.equ	0x0408	; interrupt both edges
+GPIOIEV		.equ	0x040c	; interrupt event
+GPIOIM		.equ	0x0410	; interrupt mask
+GPIORIS		.equ	0x0414	; raw interrupt status
+GPIOMIS		.equ	0x0418	; masked interrupt status
+GPIOICR		.equ	0x041c	; interrupt clear
+GPIOAFSEL	.equ	0x0420	; alternate function select
+GPIODR2R	.equ	0x0500	; 2 mA Drive select
+GPIODR4R	.equ	0x0504	; 4 mA Drive select
+GPIODR8R	.equ	0x0508	; 8 mA Drive select
+GPIOODR		.equ	0x050c	; Open drain select
+GPIOPUR		.equ	0x510	; pull-up select
+GPIOPDR		.equ	0x514	; pull-down select
+GPIOSLR		.equ	0x518	; slew rate control select
+GPIODEN		.equ	0x51c	; digital enable
+GPIOLOCK	.equ	0x520	; lock register
+GPIOCR		.equ	0x524	; commit
+GPIOAMSEL	.equ	0x528	; analog mode select
+GPIOPCTL	.equ	0x52c	; port control
+
+NVIC_EN0	.equ	0x100	; Enable avbrott 0-31
+NVIC_PRI0	.equ	0x400	; Styr prioritet avbrott 0-3
+NVIC_PRI1	.equ	0x404	; Styr prioritet avbrott 4-7
+NVIC_PRI7	.equ	0x41c	; Styr prioritet avbrott 28-31
+NVIC_PRI12	.equ	0x430	; Styr prioritet avbrott 48-51
+
+Bakgrundstext	.string	"Bakgrundsprogram",13,10,0
+Lefttext	.string "    AVBROTT v",0xe4, "nster",13,10,0
+Leftstar    .string "          *",13,10,0
+Righttext	.string "              AVBROTT h",0xf6, "ger",13,10,0
+Rightstar   .string "                    *",13,10,0
+
+
+	.global main	; main finns definierad hÃ¤r
+	.global intgpiod	; intgpiod Ã¤r definierad hÃ¤r
+	.global intgpiof	; intgpiof Ã¤r definierad hÃ¤r
+
+	.align 0x100	; Starta main pÃ¥ en adress som slutar med tvÃ¥ nollor.
+
+;*************************************************************************
+;*
+;* Placera din ditt huvudprogram (main) hÃ¤r
+;*
+
+main:
+	bl inituart
+	bl initGPIOB
+	bl initGPIOD
+	bl initGPIOE
+	bl initGPIOF
+	bl initint
+	ldr r7, GPIOE_GPIODATA ; r7 hanterar port E, vilken position siffran ska visas
+	ldr r10, GPIOB_GPIODATA ;r10 hanterar port B, vilken siffra som visas
+	ldr r4, Clock_adress ;r4 hanterar den adress som klockan är lagrad
+	mov r5,#0 ;register r5 räknar upp klockan
+	str r5,[r4]
+	str r5,[r7]
+
+mainloop:
+	;bl intgpiod
+	b	mainloop
+	.align 0x100	; Starta avbrottrutin fÃ¶r GPIO port D pÃ¥ en adress som slutar med tvÃ¥ nollor
+;**********************************************
+intgpiod:
+	push {lr}
+	ldr	 r1,GPIOD_base 		;r1 hanterar höger avbrott
+	mov	 r0,#0xff 			;reset r0
+	str  r0,[r1,#GPIOICR] 	;nollställer avbrott
+
+	mov r3,#0
+	ldrb r0, [r4,r5]
+	and r1,r0,#0x0F ;maska ut siffran (byte) antas finnas i r0
+	adr r2,SJUSEGTAB ;r2 laddar samtliga siffror
+	add r2,r2,r1 ;pekar ut rätt byte
+	ldrb r1,[r2] ;laddar byte till r1 från r2
+
+	cmp r5,#4 ;är siffran på sista position?
+	beq Clockloop
+	str r3, [r10] ;skriv ut position på siffra
+	str r5,[r7] ;skriv ut första siffra
+	str r1,[r10] ;
+	add r5,#1 ;räkna upp 1 sekund
+	pop {lr}
+	bx lr
+
+Clockloop:
+	mov r5,#0 ;starta om klockan
+	str r5, [r10] ;skriv ut position på siffra
+	str r5,[r7] ;skriv ut första siffra
+	pop {lr}
+	bx lr
+
+	.align 0x100	; Placera rutinen nedan i programminnet pÃ¥ en adress som slutar med 00
+
+
+;***********************************************
+;*
+;* Placera din avbrottsrutin fÃ¶r GPIO port F hÃ¤r
+;*
+intgpiof:
+	push {lr}
+	ldr	r1,GPIOF_base
+	mov	r0,#0xff
+	str r0,[r1,#GPIOICR]
+
+sec_timer:
+	ldrb r8,[r4]
+	add r8,r8,#1
+	cmp r8,#10
+	beq 10sec_timer
+	strb r8,[r4]
+	pop{lr}
+	bx lr
+
+10sec_timer:
+	strb r6,[r4]
+	ldrb r8,[r4,#1]
+	add r8,r8,#1
+	cmp r8,#6
+	beq minute_timer
+	strb r8,[r4,#1]
+	pop{lr}
+	bx lr
+
+minute_timer:
+	strb r6,[r4,#1]
+	ldrb r8,[r4,#2]
+	add r8,r8,#1
+	cmp r8,#10
+	beq 10min_timer
+	strb r8,[r4,#2]
+	pop{lr}
+	bx lr
+
+10min_timer:
+	strb r6,[r4,#2]
+	ldrb r8,[r4,#3]
+	add r8,r8,#1
+	cmp r8,#6
+	beq Reset_clock
+	strb r8,[r4,#3]
+	pop{lr}
+	bx lr
+
+Reset_clock:
+	mov r6,#0
+	str r6,[r4]
+	pop{lr}
+	bx lr
+
+
+
+	.align 0x100
+	; Placera i programminnet pÃ¥ en adress som slutar med 00
+	.align 2
+
+;* SKBAK: Skriver ut texten "Bakgrundsprogram" i lÃ¥ngsam fart
+;* FÃ¶rstÃ¶r r3, r2, r1, r0
+SKBAK:
+	push {lr}
+	adr	r3,Bakgrundstext
+	bl	slowprintstring
+	pop	{lr}
+	bx	lr
+
+;* SKAVV: Skriver ut texten "Avbrott vÃ¤nster" fÃ¶ljt av 5 rader med en stjÃ¤rna
+;* FÃ¶rstÃ¶r r3, r2, r1, r0
+SKAVV:
+	adr	r3,Lefttext
+	push {lr}
+	bl	slowprintstring
+	mov r2,#5
+leftloop:
+	mov r1,#600
+	bl	DELAY
+	adr	r3,Leftstar
+	bl	slowprintstring
+	subs r2,r2,#1
+	bne leftloop
+	pop	{lr}
+	bx	lr
+
+;* SKAVH: Skriver ut texten "Avbrott hÃ¶ger" fÃ¶ljt av 5 rader med en stjÃ¤rna
+;* FÃ¶rstÃ¶r r3, r2, r1, r0
+SKAVH:
+	adr	r3,Righttext
+	push {lr}
+	bl	slowprintstring
+	mov r2,#5
+rightloop:
+	mov r1,#600
+	bl	DELAY
+	adr	r3,Rightstar
+	bl	slowprintstring
+	subs r2,r2,#1
+	bne rightloop
+	pop	{lr}
+	bx	lr
+
+;* DELAY:
+;* r1 = antal ms, fÃ¶rstÃ¶r r1
+DELAY:
+	push {r0}
+loop_millisecond:
+	mov r0,#0x1300
+loop_delay:
+    subs r0,r0,#1
+    bne loop_delay
+    subs r1,r1,#1
+    bne loop_millisecond
+	pop	{r0}
+	bx	lr
+
+;* inituart: SÃ¤tter upp seriell kommunikation (starta UART0, sÃ¤tt baudrate 115200, 8N1 format)
+inituart:
+	ldr r1,RCGCUART
+	ldr	r0,[r1]
+	orr r0,#0x01
+	str r0,[r1]
+
+;   aktivera  GPIO Port A
+	ldr r1,RCGCGPIO
+	ldr	r0,[r1]
+	orr r0,#0x01
+	str r0,[r1]
+
+	nop
+	nop
+	nop
+
+;   Anslut pin 0 och 1 pÃ¥ GPIO port A till UART function (fÃ¶rvalt redan fÃ¶r UART0)
+;   TillÃ¥t alt funktion och slÃ¥ pÃ¥ digital I/O pÃ¥ port A pin 0 och 1
+    ldr r1,GPIOA_base
+    ldr	r0,[r1,#GPIOAFSEL]
+    orr r0,#0x03
+    str r0,[r1,#GPIOAFSEL]
+
+    ldr	r0,[r1,#GPIODEN]
+    orr r0,#0x03
+    str r0,[r1,#GPIODEN]
+
+;   SÃ¤tt klockfrekvens fÃ¶r uart, berÃ¤knas som BRD = 16 MHz / (16 * 115200) = 8.680556 => BRDI = 8, BRDF=0.6805556, DIVFRAC=(0.6805556*64+0.5)=44
+;      Slutlig instÃ¤llning av klocka fÃ¶r uart:
+;         8 till UARTIBRD (bit 15 till 0 i UARTIBRD)
+	ldr r1,UART0_base
+	mov r0,#0x08
+	str r0,[r1,#UARTIBRD]
+
+;        44 till UARTFBRD (bit 5 to 0 i UARTFBRD)
+	mov r0,#44
+	str r0,[r1,#UARTFBRD]
+
+;   initiera 8 bit, ingen FIFO buffert, 1 stop bit, ingen paritetsbit (0x60 to bit 7 till 0 i UARTLCRH)
+	mov r0,#0x60
+	str r0,[r1,#UARTLCRH]
+
+;   aktivera uart (0 till bitarna 15 and 14, 0 till bit 11, 0x6 till bitarna 9 to 7, 0x01 till bitarna 5 downto 0 i UARTCTL)
+
+	mov r0,#0x0301
+	str r0,[r1,#UARTCTL]
+
+	bx	lr
+
+	.align 0x10
+
+; initGPIOB, sÃ¤tt GPIO port B pin 7 till 0 som utgÃ¥ngar
+; fÃ¶rstÃ¶r r0, r1
+initGPIOB:
+	ldr	r1,RCGCGPIO
+	ldr r0,[r1]
+	orr	r0,#0x02	; Aktivera GPIO port B
+	str r0,[r1]
+    nop  ; 5 klockcykler innan porten fÃ¥r anvÃ¤ndas
+    nop
+	nop
+
+	ldr	r1,GPIO_HBCTL	; VÃ¤lj bus fÃ¶r GPIOB
+	ldr r0,[r1]
+	bic	r0,#0x02       ; vÃ¤lj apb bus fÃ¶r GPIOB (nollstÃ¤ll bit 1)
+	str	r0,[r1]
+
+	ldr r1,GPIOB_base
+	mov r0,#0xff	; alla pinnar Ã¤r utgÃ¥ngar
+	str r0,[r1,#GPIODIR]
+
+	mov r0,#0		; alla pinnar fungerar som GPIO-port
+	str r0,[r1,#GPIOAFSEL]
+
+	mov	r0,#0x00	; FÃ¶rhindra analog funktion
+	str r0,[r1,#GPIOAMSEL]
+
+	mov r0,#0x00	; AnvÃ¤nd port B som GPIO utan speciella funktioner
+	str r0,[r1,#GPIOPCTL]
+
+	mov r0,#0x00	; Inga pullup pinnar pÃ¥ port B
+	str r0,[r1,#GPIOPUR]
+
+	mov r0,#0xff	; alla pinnar Ã¤r digital I/O
+	str r0,[r1,#GPIODEN]
+
+	bx	lr
+
+
+; initGPIOD, sÃ¤tt pinnar 2,3,6,7 som ingÃ¥ngar
+; destroy r0, r1
+initGPIOD:
+	ldr	r1,RCGCGPIO
+	ldr r0,[r1]
+	orr	r0,#0x08	; aktivera GPIO port D clocking
+	str r0,[r1]
+    nop  ; 5 klockcykler innan porten kan anvÃ¤ndas
+    nop
+	nop
+
+	ldr	r1,GPIO_HBCTL	; anvÃ¤nd inte ahb fÃ¶r GPIOD
+	ldr r0,[r1]
+	bic	r0,#0x08       ; anvÃ¤nd apb bus fÃ¶r GPIOD
+	str	r0,[r1]
+
+	ldr r1,GPIOD_base
+	ldr	r0,GPIO_KEY
+	str	r0,[r1,#GPIOLOCK]		; lÃ¥s upp port F configurationsregister
+
+	mov	r0,#0xcc	; tillÃ¥t de 4 pinnarna i porten att konfigureras
+	str r0,[r1,#GPIOCR]
+
+	mov r0,#0x0		; alla som ingÃ¥ngar
+	str r0,[r1,#GPIODIR]
+
+	mov r0,#0		; alla portens bitar som GPIO
+	str r0,[r1,#GPIOAFSEL]
+
+	mov	r0,#0x00	; fÃ¶rhindra analog funktionalitet
+	str r0,[r1,#GPIOAMSEL]
+
+	mov r0,#0x00	; anvÃ¤nd port D som GPIO utan speciella funktioner
+	str r0,[r1,#GPIOPCTL]
+
+	mov r0,#0x00	; Ingen pullup pÃ¥ port D
+	str r0,[r1,#GPIOPUR]
+
+	mov r0,#0xff	; alla pinnar som digital I/O
+	str r0,[r1,#GPIODEN]
+
+	bx	lr
+
+; initGPIOE, sÃ¤tt pinnar bit 0-5 som utgÃ¥ngar
+; destroy r0, r1
+initGPIOE:
+	ldr	r1,RCGCGPIO
+	ldr r0,[r1]
+	orr	r0,#0x10	; aktivera GPIO port E
+	str r0,[r1]
+    nop  ; 5 klockcykler innan porten anvÃ¤nds
+    nop
+	nop
+
+	ldr	r1,GPIO_HBCTL	; AnvÃ¤nd inte ahb (high performance bus) fÃ¶r GPIOE
+	ldr r0,[r1]
+	bic	r0,#0x10       ; anvÃ¤nd apb bus for GPIOE
+	str	r0,[r1]
+
+	ldr r1,GPIOE_base
+	mov r0,#0x3f		; alla pinnar ska vara utgÃ¥ngar
+	str r0,[r1,#GPIODIR]
+
+	mov r0,#0		; alla portens bitar som GPIO
+	str r0,[r1,#GPIOAFSEL]
+
+	mov	r0,#0x00	; fÃ¶rhindra analog funktionalitet
+	str r0,[r1,#GPIOAMSEL]
+
+	mov r0,#0x00	; anvÃ¤nd port E som GPIO utan speciell funktionailtet
+	str r0,[r1,#GPIOPCTL]
+
+	mov r0,#0x00	; Ingen pullup pÃ¥ port E
+	str r0,[r1,#GPIOPUR]
+
+	mov r0,#0x3f	; alla pinnar som digital I/O
+	str r0,[r1,#GPIODEN]
+
+	bx	lr
+
+
+; initGPIOF, sÃ¤tt pin 0-3 som utgÃ¥ngar, pin 4 som ingÃ¥ng med pullup
+; fÃ¶rstÃ¶r r0, r1
+
+initGPIOF:
+	ldr	r1,RCGCGPIO
+	ldr r0,[r1]
+	orr	r0,#0x20	; aktivera GPIO port F
+	str r0,[r1]
+    nop  ; 5 klockcykler innan porten kan anvÃ¤ndas
+    nop
+	nop
+
+	ldr	r1,GPIO_HBCTL	; VÃ¤lj bustyp fÃ¶r GPIOF
+	ldr r0,[r1]
+	bic	r0,#0x20    ; vÃ¤lj GPIOF port ansluten till apb bus
+	str	r0,[r1]
+
+	ldr r1,GPIOF_base
+	ldr	r0,GPIO_KEY
+	str	r0,[r1,#GPIOLOCK]		; lÃ¥s upp port F configurationsregister
+
+	mov	r0,#0x1f	; tillÃ¥á alla 5 bitarna bli konfigurerade
+	str r0,[r1,#GPIOCR]
+
+	mov	r0,#0x00	; fÃ¶rhindra analog function
+	str r0,[r1,#GPIOAMSEL]
+
+	mov r0,#0x00	; anvÃ¤nd port F som GPIO
+	str r0,[r1,#GPIOPCTL]
+
+	mov r0,#0x0f	; anvÃ¤nd bit 0-3 som utgÃ¥ngar (Tryck INTE pÃ¥ hÃ¶gra svarta knappen pÃ¥ Darma!)
+	str r0,[r1,#GPIODIR]
+
+	mov r0,#0		; alla pinnar ska vara GPIO
+	str r0,[r1,#GPIOAFSEL]
+
+	mov r0,#0x10	; svag pull-up fÃ¶r switch ingÃ¥ng
+	str r0,[r1,#GPIOPUR]
+
+	mov r0,#0xff	; alla pinnar som  digitala I/O
+	str r0,[r1,#GPIODEN]
+
+	bx	lr
+
+
+; initint, initiera avbrottshanteringen
+; fÃ¶rstÃ¶r r0,r1
+; TillÃ¥t avbrott frÃ¥n pin 7 port D och pin 4 port F
+initint:
+	; TillÃ¥t inte avbrott
+	cpsid	i
+
+	; Generera avbrott frÃ¥n port D, GPIO port D Ã¤r avbrott nr 3 (vector 19)
+	; positiv flank, hÃ¶g prioritet pÃ¥ avbrott
+
+	; Generera avbrott frÃ¥n port F, GPIO port F Ã¤r avbrott nr 30 (vector 46)
+	; positiv flank, lÃ¥g prioritet pÃ¥ avbrott
+
+	; avbrott aktiveras pÃ¥ insignalens flank
+	ldr	r1,GPIOF_base
+	mov	r0,#0x00	; edge detection
+	str r0,[r1,#GPIOIS]
+
+	; nollstÃ¤ll avbrott
+	mov	r0,#0xff	; clear interrupts
+	str r0,[r1,#GPIOICR]
+
+	; Endast stigande flank (ignorera fallande flank)
+	mov	r0,#0x00	; Use IEV to control
+	str r0,[r1,#GPIOIBE]
+
+	mov	r0,#0x10	; stigande flank
+	str r0,[r1,#GPIOIEV]
+
+	; nollstÃ¤ll avbrott
+	mov	r0,#0xff	; clear interrupts
+	str r0,[r1,#GPIOICR]
+
+	; tillÃ¥t avbrott frÃ¥n bit 4
+	mov	r0,#0x10	; Send interrupt to controller
+	str r0,[r1,#GPIOIM]
+
+	; NVIC_priority interrupt 30 (
+	ldr	r1,NVIC_base
+	ldr	r0,[r1,#NVIC_PRI7]		; Set priority 5
+	mvn r2,#0x00e00000	; nollstÃ¤ll bit 23 till 21
+	and	r0,r2
+	orr r0,#0x00a00000
+	str r0,[r1,#NVIC_PRI7]
+
+	; NVIC_enable tillÃ¥t avbrott nr 30 (port F)
+    ldr r0,[r1,#NVIC_EN0]
+	orr r0,#0x40000000
+	str r0,[r1,#NVIC_EN0]
+
+	; avbrott aktiveras av stigande flank
+	ldr	r1,GPIOD_base
+	mov	r0,#0x00	; edge detection
+	str r0,[r1,#GPIOIS]
+
+	; nollstÃ¤ll avbrott
+	mov	r0,#0xff	; clear interrupts
+	str r0,[r1,#GPIOICR]
+
+	; ignorera fallande flank
+	mov	r0,#0x00	; Use IEV to control
+	str r0,[r1,#GPIOIBE]
+
+	; stigande flank edge
+	mov	r0,#0xcc	; rising edge
+	str r0,[r1,#GPIOIEV]
+
+	;clear interrupts
+	mov	r0,#0xff	; clear interrupts
+	str r0,[r1,#GPIOICR]
+
+	; tillÃ¥t avbrott frÃ¥n bit 7
+	mov	r0,#0x80	; Send interrupt to controller
+	str r0,[r1,#GPIOIM]
+
+	; NVIC_priority avbrott
+	ldr	r1,NVIC_base
+	ldr	r0,[r1,#NVIC_PRI0]		; Set priority 2
+	bic r0,r0,#0xe0000000		; nollstÃ¤ll bit 31-29
+	orr r0,r0,#0x40000000
+	str r0,[r1,#NVIC_PRI0]
+
+	; NVIC_enable port D avbrott
+	ldr r0,[r1,#NVIC_EN0]
+	orr r0,#0x00000008			; tillÃ¥t avbrott nr 3
+	str r0,[r1,#NVIC_EN0]
+
+	; enable interrupts
+	cpsie	i
+
+	bx	lr
+
+
+; Startadress i r3, strÃ¤ng avslutas med vÃ¤rdet 0
+; fÃ¶rstÃ¶r r0, r1, r3
+slowprintstring:
+	push {lr}
+nextchar:
+	ldrb r0,[r3],#1
+	cmp r0,#0
+	beq slowprintstringdone
+	bl printchar
+	mov r1,#40
+	bl DELAY
+	b	nextchar
+slowprintstringdone:
+	pop {lr}
+	bx lr
+
+printchar:
+;   Skriv ut tecken placerat i r0
+;   LÃ¤s bit 5 (TXFF) i UART0_FR, vÃ¤nta tills den blivit 0
+;   skriv bit 7-0 i UART0_DR
+	push {r1}
+loop1:
+	ldr r1,UART0_base
+    ldr r1,[r1,#UARTFR]
+    ands r1,#0x20		; Kontrollera om sÃ¤ndarbuffert Ã¤r full
+    bne loop1			; Hopp om full
+    ldr r1,UART0_base
+    str r0,[r1,#UARTDR]	; Skicka tecken
+    pop {r1}
+    bx lr
+
+
+
+
+
